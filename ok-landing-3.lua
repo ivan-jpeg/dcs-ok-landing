@@ -1,44 +1,44 @@
---[[ ok-landing.lua v4 — Ny max фиксируется только при касании (touchdown), Lua 5.1
-  Утилита измерения максимальной вертикальной перегрузки при посадке в DCS.
-  Вызов: DO SCRIPT FILE в миссии.
-  Радио-меню F10 → Other: «Старт измерения», «Сброс измерения», «Стоп измерения».
+--[[ ok-landing.lua v5 — фикс Ny в момент касания через "impact" по вертикальному ускорению (не AGL),
+     Lua 5.1. Работает устойчивее, чем детект AGL.
 
-  Логика:
-    - currentNy вычисляется непрерывно и (опционально) выводится как отладка.
-    - maxNy обновляется ТОЛЬКО в момент касания земли (touchdown).
-    - Касание детектится переходом AGL через порог TOUCHDOWN_AGL_M сверху вниз + признак "на земле"
-      (если доступен) и/или отрицательная вертикальная скорость.
-    - Вокруг события касания берётся окно значений Ny и в maxNy попадает максимум по окну.
+  Почему v4 мог показывать Ny=1:
+    - maxNy теперь обновлялся только на "touchdown", а событие касания могло не детектиться
+      (AGL на ВПП/склонах, onGround недоступен, порог/скорость не совпали) -> maxNy оставался 1.
+    - дополнительно пики Ny могли быть очень короткими, и при редкой дискретизации их легко пропустить.
 
-  Автостарт/автостоп по AGL:
-    - Ниже 100 м AGL: измерение включается (если нет manualOverride).
-    - Выше 100 м AGL: измерение выключается (если нет manualOverride).
+  Новый алгоритм:
+    - currentNy вычисляется непрерывно как и раньше (1 + ay/g).
+    - Касание/удар детектится по признаку резкого положительного вертикального ускорения ay
+      (т.е. Ny превышает порог IMPACT_NY_THRESHOLD).
+    - После детекта запускается сбор Ny в окне IMPACT_WINDOW_SEC и maxNy обновляется максимумом окна.
+    - Антидребезг IMPACT_COOLDOWN_SEC.
+
+  Автостарт/автостоп по AGL оставлен (ниже 100м включаем, выше — выключаем), если нет manualOverride.
+  Ручные команды меню работают как раньше.
 ]]
 
 local G = 9.81
 local POLL_INTERVAL = 2.0
-local UPDATE_INTERVAL = 0.05  -- чуть чаще, чтобы точнее поймать касание
+local UPDATE_INTERVAL = 0.02  -- чаще, чтобы поймать пики
 
 local AUTO_AGL_THRESHOLD_M = 100.0
 local AUTO_START_ENABLED = true
 
--- Детект касания
-local TOUCHDOWN_AGL_M = 0.8          -- порог AGL для "контакта" (метры)
-local TOUCHDOWN_VY_MAX = -0.2        -- vy должен быть <= этого (падает/не растёт), м/с
-local TOUCHDOWN_COOLDOWN = 1.5       -- антидребезг касания, сек
+-- Детект "удара" (касания) по перегрузке
+local IMPACT_NY_THRESHOLD = 1.30     -- порог Ny, выше которого считаем что начался "impact"
+local IMPACT_WINDOW_SEC   = 0.60     -- сколько собираем Ny после триггера
+local IMPACT_COOLDOWN_SEC = 1.50     -- минимальный интервал между касаниями
 
--- Окно Ny вокруг касания (pre/post), сек
-local TD_PRE_WINDOW = 0.30
-local TD_POST_WINDOW = 0.40
+-- Доп. фильтры (чтобы не ловить манёвры в воздухе):
+local IMPACT_AGL_MAX_M = 5.0         -- детект удара разрешён только ниже этой высоты AGL (если доступно)
+local IMPACT_VY_MAX = 1.0            -- вертикальная скорость не должна быть сильно положительной (м/с)
 
 -- Флаг для включения отладки
 local DEBUG_CURRENT_NY = true  -- Установите в false для отключения отладки
 
--- Состояние по группе:
--- maxNy, measuring, showMessage, prevVel, prevTime, currentNy, groupName,
--- manualOverride (nil/true) - если true, авто-логика не вмешивается (после ручного Старт/Стоп)
--- prevAGL
--- tdCollecting (bool), tdT0 (time), tdWindowMaxNy (number), lastTouchdownTime (time)
+-- state:
+-- maxNy, measuring, showMessage, prevVel, prevTime, currentNy, groupName, manualOverride
+-- impactCollecting(bool), impactT0(time), impactWindowMaxNy(number), lastImpactTime(time)
 local stateByGroup = {}
 local menuAddedForGroups = {}
 local nextPollTime = 0
@@ -47,12 +47,9 @@ local nextUpdateTime = 0
 local function formatMessage(maxNy, currentNy)
   local nyStr = string.format("%.2f", maxNy)
   local message = "Максимальная перегрузка\n______________________\n\nNy = " .. nyStr
-
   if DEBUG_CURRENT_NY and currentNy then
-    local currentNyStr = string.format("%.2f", currentNy)
-    message = message .. "\nТекущая Ny = " .. currentNyStr
+    message = message .. "\nТекущая Ny = " .. string.format("%.2f", currentNy)
   end
-
   return message
 end
 
@@ -64,7 +61,6 @@ local function getUnitFromGroup(groupName)
   return unit
 end
 
--- Высота AGL (над поверхностью) в метрах.
 local function getAGL(unit)
   if not unit or not unit:isExist() then return nil end
   local p = unit:getPoint()
@@ -74,20 +70,6 @@ local function getAGL(unit)
   return p.y - terrainH
 end
 
--- Попытка определить "на земле" (не всегда доступно во всех контекстах/версиях)
-local function isOnGround(unit)
-  if not unit or not unit:isExist() then return nil end
-  -- В некоторых версиях DCS есть Unit:inAir()
-  if unit.inAir then
-    local ok, res = pcall(function() return unit:inAir() end)
-    if ok and type(res) == "boolean" then
-      return (not res)
-    end
-  end
-  return nil -- неизвестно
-end
-
--- Вертикальная перегрузка Ny по скорости.
 local function computeNyFromVelocity(velNow, velPrev, dt)
   if not velNow or not velPrev or dt <= 0 then return nil end
   local vy = velNow.y
@@ -117,11 +99,10 @@ local function resetMeasuringForGroup(groupId, s)
   s.currentNy = nil
   s.prevVel = nil
   s.prevTime = nil
-  s.prevAGL = nil
-  s.tdCollecting = false
-  s.tdT0 = nil
-  s.tdWindowMaxNy = nil
-  s.lastTouchdownTime = nil
+  s.impactCollecting = false
+  s.impactT0 = nil
+  s.impactWindowMaxNy = nil
+  s.lastImpactTime = nil
   if s.showMessage then
     trigger.action.outTextForGroup(groupId, formatMessage(s.maxNy, s.currentNy), 1, true)
   end
@@ -143,11 +124,10 @@ local function addMenuForGroup(group)
     currentNy = nil,
     manualOverride = nil,
 
-    prevAGL = nil,
-    tdCollecting = false,
-    tdT0 = nil,
-    tdWindowMaxNy = nil,
-    lastTouchdownTime = nil,
+    impactCollecting = false,
+    impactT0 = nil,
+    impactWindowMaxNy = nil,
+    lastImpactTime = nil,
   }
 
   local groupInfo = { groupId = groupId, groupName = group:getName() }
@@ -196,7 +176,6 @@ end
 
 local function applyAutoStartStopByAGL(_t)
   if not AUTO_START_ENABLED then return end
-
   for groupId, s in pairs(stateByGroup) do
     if not s.manualOverride then
       local unit = getUnitFromGroup(s.groupName)
@@ -204,13 +183,9 @@ local function applyAutoStartStopByAGL(_t)
         local agl = getAGL(unit)
         if type(agl) == "number" then
           if agl < AUTO_AGL_THRESHOLD_M then
-            if not s.measuring then
-              startMeasuringForGroup(groupId, s)
-            end
+            if not s.measuring then startMeasuringForGroup(groupId, s) end
           else
-            if s.measuring then
-              stopMeasuringForGroup(groupId, s)
-            end
+            if s.measuring then stopMeasuringForGroup(groupId, s) end
           end
         end
       end
@@ -218,106 +193,71 @@ local function applyAutoStartStopByAGL(_t)
   end
 end
 
-local function beginTouchdownCollection(s, t, Ny)
-  s.tdCollecting = true
-  s.tdT0 = t
-  s.tdWindowMaxNy = Ny or s.tdWindowMaxNy or nil
+local function beginImpactCollection(s, t, Ny)
+  s.impactCollecting = true
+  s.impactT0 = t
+  s.impactWindowMaxNy = Ny
 end
 
-local function finalizeTouchdownCollection(s)
-  if s.tdWindowMaxNy and (not s.maxNy or s.tdWindowMaxNy > s.maxNy) then
-    s.maxNy = s.tdWindowMaxNy
+local function finalizeImpactCollection(s)
+  if s.impactWindowMaxNy and s.impactWindowMaxNy > s.maxNy then
+    s.maxNy = s.impactWindowMaxNy
   end
-  s.tdCollecting = false
-  s.tdT0 = nil
-  s.tdWindowMaxNy = nil
+  s.impactCollecting = false
+  s.impactT0 = nil
+  s.impactWindowMaxNy = nil
 end
 
-local function updateNyTouchdownAndMessage(t)
+local function updateNyImpactAndMessage(t)
   for groupId, s in pairs(stateByGroup) do
     if s.measuring then
       local unit = getUnitFromGroup(s.groupName)
       if unit and unit:isExist() then
         local vel = unit:getVelocity()
-        local agl = getAGL(unit)
-
         if vel and type(vel.y) == "number" then
-          -- copy
           local velCopy = { x = vel.x, y = vel.y, z = vel.z }
 
-          -- currentNy (continuous)
           local Ny = nil
-          if s.prevVel and s.prevTime and (t - s.prevTime) > 0.001 then
-            local dt = t - s.prevTime
-            Ny = computeNyFromVelocity(velCopy, s.prevVel, dt)
+          if s.prevVel and s.prevTime and (t - s.prevTime) > 0.0005 then
+            Ny = computeNyFromVelocity(velCopy, s.prevVel, t - s.prevTime)
           end
           s.currentNy = Ny
 
-          -- Touchdown detection and windowing
-          local prevAGL = s.prevAGL
-          local nowAGL = agl
-          local vy = velCopy.y
-          local onGround = isOnGround(unit) -- may be nil
-
-          -- condition: crossed to near-ground and descending/not climbing
-          local crossedToGround = false
-          if type(prevAGL) == "number" and type(nowAGL) == "number" then
-            if prevAGL > TOUCHDOWN_AGL_M and nowAGL <= TOUCHDOWN_AGL_M then
-              crossedToGround = true
-            end
-          end
-
-          local descending = (type(vy) == "number" and vy <= TOUCHDOWN_VY_MAX) or false
-          local groundOk = (onGround == true) or (onGround == nil) -- if unknown, don't block
-
-          local cooldownOk = true
-          if s.lastTouchdownTime and type(s.lastTouchdownTime) == "number" then
-            if (t - s.lastTouchdownTime) < TOUCHDOWN_COOLDOWN then
+          -- Impact trigger logic
+          if Ny and type(Ny) == "number" then
+            local cooldownOk = true
+            if s.lastImpactTime and (t - s.lastImpactTime) < IMPACT_COOLDOWN_SEC then
               cooldownOk = false
             end
+
+            local vyOk = (velCopy.y <= IMPACT_VY_MAX)
+
+            local aglOk = true
+            local agl = getAGL(unit)
+            if type(agl) == "number" then
+              aglOk = (agl <= IMPACT_AGL_MAX_M)
+            end
+
+            if (not s.impactCollecting) and cooldownOk and vyOk and aglOk and (Ny >= IMPACT_NY_THRESHOLD) then
+              s.lastImpactTime = t
+              beginImpactCollection(s, t, Ny)
+            end
           end
 
-          if crossedToGround and descending and groundOk and cooldownOk then
-            s.lastTouchdownTime = t
-            beginTouchdownCollection(s, t, Ny)
-          end
-
-          -- While collecting: keep max Ny in window
-          if s.tdCollecting then
+          -- If collecting, update window max and finalize when time elapsed
+          if s.impactCollecting then
             if Ny and type(Ny) == "number" then
-              if (not s.tdWindowMaxNy) or Ny > s.tdWindowMaxNy then
-                s.tdWindowMaxNy = Ny
+              if (not s.impactWindowMaxNy) or Ny > s.impactWindowMaxNy then
+                s.impactWindowMaxNy = Ny
               end
             end
-
-            -- finalize after post window
-            if s.tdT0 and (t - s.tdT0) >= TD_POST_WINDOW then
-              finalizeTouchdownCollection(s)
-            end
-          else
-            -- Also support a short "pre-window": when very low AGL, we can prefill window max
-            -- to catch the peak slightly BEFORE crossing threshold. This is a simple heuristic:
-            if type(nowAGL) == "number" and nowAGL <= (TOUCHDOWN_AGL_M + 0.5) then
-              -- keep a rolling max over last TD_PRE_WINDOW seconds by piggybacking on prevTime
-              -- Simplification: if we're in this zone and descending, store best Ny until touchdown triggers.
-              if descending and Ny and type(Ny) == "number" then
-                -- store in tdWindowMaxNy even before tdCollecting; beginTouchdownCollection will keep it
-                if (not s.tdWindowMaxNy) or Ny > s.tdWindowMaxNy then
-                  s.tdWindowMaxNy = Ny
-                end
-                -- expire prefill if too old (approx, based on prevTime)
-                -- We'll reset it when we climb back up a bit.
-              end
-            else
-              -- once we're not near ground, clear any prefill buffer
-              s.tdWindowMaxNy = nil
+            if s.impactT0 and (t - s.impactT0) >= IMPACT_WINDOW_SEC then
+              finalizeImpactCollection(s)
             end
           end
 
-          -- store prevs
           s.prevVel = velCopy
           s.prevTime = t
-          s.prevAGL = nowAGL
 
           if s.showMessage then
             trigger.action.outTextForGroup(groupId, formatMessage(s.maxNy, s.currentNy), 1, true)
@@ -340,15 +280,15 @@ local function scheduler(_args, t)
       env.info("[ok-landing] applyAutoStartStopByAGL error: " .. tostring(err1))
     end
 
-    local ok2, err2 = pcall(updateNyTouchdownAndMessage, t)
+    local ok2, err2 = pcall(updateNyImpactAndMessage, t)
     if not ok2 and err2 then
-      env.info("[ok-landing] updateNyTouchdownAndMessage error: " .. tostring(err2))
+      env.info("[ok-landing] updateNyImpactAndMessage error: " .. tostring(err2))
     end
 
     nextUpdateTime = t + UPDATE_INTERVAL
   end
 
-  return t + 0.05
+  return t + 0.02
 end
 
 timer.scheduleFunction(scheduler, {}, timer.getTime() + 1)
