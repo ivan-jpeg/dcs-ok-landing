@@ -1,51 +1,60 @@
---[[ ok-landing.lua v5 — фикс Ny в момент касания через "impact" по вертикальному ускорению (не AGL),
-     Lua 5.1. Работает устойчивее, чем детект AGL.
+--[[ ok-landing.lua v6 — фиксация maxNy по событию DCS S_EVENT_RUNWAY_TOUCH (DCS 2.9.6+), Lua 5.1
+  Утилита измерения максимальной вертикальной перегрузки при посадке (касание ВПП/палубы/ФАРП) игрока.
 
-  Почему v4 мог показывать Ny=1:
-    - maxNy теперь обновлялся только на "touchdown", а событие касания могло не детектиться
-      (AGL на ВПП/склонах, onGround недоступен, порог/скорость не совпали) -> maxNy оставался 1.
-    - дополнительно пики Ny могли быть очень короткими, и при редкой дискретизации их легко пропустить.
+  Вызов: DO SCRIPT FILE в миссии.
 
-  Новый алгоритм:
-    - currentNy вычисляется непрерывно как и раньше (1 + ay/g).
-    - Касание/удар детектится по признаку резкого положительного вертикального ускорения ay
-      (т.е. Ny превышает порог IMPACT_NY_THRESHOLD).
-    - После детекта запускается сбор Ny в окне IMPACT_WINDOW_SEC и maxNy обновляется максимумом окна.
-    - Антидребезг IMPACT_COOLDOWN_SEC.
+  Меню F10 → Other (для группы игрока):
+    - «Старт измерения»  : включает измерение и показывает окно
+    - «Сброс измерения»  : сбрасывает maxNy и буферы
+    - «Стоп измерения»   : останавливает измерение и скрывает окно
 
-  Автостарт/автостоп по AGL оставлен (ниже 100м включаем, выше — выключаем), если нет manualOverride.
-  Ручные команды меню работают как раньше.
+  Алгоритм:
+    - currentNy вычисляется непрерывно из вертикального ускорения (dVy/dt) и может выводиться (DEBUG_CURRENT_NY).
+    - maxNy обновляется ТОЛЬКО при получении события S_EVENT_RUNWAY_TOUCH для самолёта игрока:
+        берём максимум Ny из окна вокруг события: [touchTime - PRE_TOUCH_SEC, touchTime + POST_TOUCH_SEC].
+      Для этого ведётся кольцевой буфер последних Ny с таймстемпами и после касания ещё собираются значения POST окна.
+
+  Примечания:
+    - Событие S_EVENT_RUNWAY_TOUCH доступно с DCS 2.9.6.
+    - Скрипт привязан к самолёту(самолётам) игроков через coalition.getPlayers(). Меню добавляется на группу игрока.
 ]]
 
 local G = 9.81
+
 local POLL_INTERVAL = 2.0
-local UPDATE_INTERVAL = 0.02  -- чаще, чтобы поймать пики
+local UPDATE_INTERVAL = 0.02  -- чем меньше, тем лучше ловим пик Ny
 
-local AUTO_AGL_THRESHOLD_M = 100.0
-local AUTO_START_ENABLED = true
+-- Окно выборки вокруг касания
+local PRE_TOUCH_SEC  = 0.35
+local POST_TOUCH_SEC = 0.50
 
--- Детект "удара" (касания) по перегрузке
-local IMPACT_NY_THRESHOLD = 1.30     -- порог Ny, выше которого считаем что начался "impact"
-local IMPACT_WINDOW_SEC   = 0.60     -- сколько собираем Ny после триггера
-local IMPACT_COOLDOWN_SEC = 1.50     -- минимальный интервал между касаниями
+-- Размер буфера (сек) для хранения Ny-истории (должен быть > PRE_TOUCH_SEC с запасом)
+local HISTORY_SEC = 2.0
 
--- Доп. фильтры (чтобы не ловить манёвры в воздухе):
-local IMPACT_AGL_MAX_M = 5.0         -- детект удара разрешён только ниже этой высоты AGL (если доступно)
-local IMPACT_VY_MAX = 1.0            -- вертикальная скорость не должна быть сильно положительной (м/с)
+-- Антидребезг: игнорировать повторные touchdown события в течение N секунд
+local TOUCH_COOLDOWN_SEC = 1.0
 
--- Флаг для включения отладки
-local DEBUG_CURRENT_NY = true  -- Установите в false для отключения отладки
+-- Показывать текущую Ny в сообщении (отладка)
+local DEBUG_CURRENT_NY = true
 
--- state:
--- maxNy, measuring, showMessage, prevVel, prevTime, currentNy, groupName, manualOverride
--- impactCollecting(bool), impactT0(time), impactWindowMaxNy(number), lastImpactTime(time)
+-- Event ID (на случай если env.mission не содержит констант)
+local S_EVENT_RUNWAY_TOUCH = 55
+
+-- stateByGroup[groupId] = {
+--   maxNy, measuring, showMessage, prevVel, prevTime, currentNy, groupName, manualOverride,
+--   history = { {t=, ny=} ... }, lastTouchTime,
+--   postCollectUntil (time or nil), touchTime (time or nil), touchPlaceName (string or nil),
+-- }
 local stateByGroup = {}
 local menuAddedForGroups = {}
 local nextPollTime = 0
 local nextUpdateTime = 0
 
+-- Быстрый маппинг UnitName -> groupId (обновляется при polling игроков)
+local unitNameToGroupId = {}
+
 local function formatMessage(maxNy, currentNy)
-  local nyStr = string.format("%.2f", maxNy)
+  local nyStr = string.format("%.2f", maxNy or 1)
   local message = "Максимальная перегрузка\n______________________\n\nNy = " .. nyStr
   if DEBUG_CURRENT_NY and currentNy then
     message = message .. "\nТекущая Ny = " .. string.format("%.2f", currentNy)
@@ -61,15 +70,6 @@ local function getUnitFromGroup(groupName)
   return unit
 end
 
-local function getAGL(unit)
-  if not unit or not unit:isExist() then return nil end
-  local p = unit:getPoint()
-  if not p or type(p.x) ~= "number" or type(p.y) ~= "number" or type(p.z) ~= "number" then return nil end
-  local terrainH = land.getHeight({ x = p.x, y = p.z })
-  if type(terrainH) ~= "number" then return nil end
-  return p.y - terrainH
-end
-
 local function computeNyFromVelocity(velNow, velPrev, dt)
   if not velNow or not velPrev or dt <= 0 then return nil end
   local vy = velNow.y
@@ -77,6 +77,39 @@ local function computeNyFromVelocity(velNow, velPrev, dt)
   if type(vy) ~= "number" or type(vyPrev) ~= "number" then return nil end
   local ay = (vy - vyPrev) / dt
   return 1 + ay / G
+end
+
+local function trimHistory(s, tNow)
+  if not s.history then s.history = {} end
+  local cutoff = tNow - HISTORY_SEC
+  local h = s.history
+  -- удаляем с начала, пока старое
+  local i = 1
+  while h[i] and h[i].t < cutoff do
+    i = i + 1
+  end
+  if i > 1 then
+    for j = i, #h do h[j - (i - 1)] = h[j] end
+    for j = #h - (i - 2), #h do h[j] = nil end
+  end
+end
+
+local function addHistoryPoint(s, t, Ny)
+  if not Ny then return end
+  if not s.history then s.history = {} end
+  s.history[#s.history + 1] = { t = t, ny = Ny }
+end
+
+local function maxNyInWindow(s, t0, t1)
+  if not s.history then return nil end
+  local best = nil
+  for i = 1, #s.history do
+    local p = s.history[i]
+    if p.t >= t0 and p.t <= t1 and type(p.ny) == "number" then
+      if (not best) or p.ny > best then best = p.ny end
+    end
+  end
+  return best
 end
 
 local function startMeasuringForGroup(groupId, s)
@@ -99,10 +132,11 @@ local function resetMeasuringForGroup(groupId, s)
   s.currentNy = nil
   s.prevVel = nil
   s.prevTime = nil
-  s.impactCollecting = false
-  s.impactT0 = nil
-  s.impactWindowMaxNy = nil
-  s.lastImpactTime = nil
+  s.history = {}
+  s.lastTouchTime = nil
+  s.postCollectUntil = nil
+  s.touchTime = nil
+  s.touchPlaceName = nil
   if s.showMessage then
     trigger.action.outTextForGroup(groupId, formatMessage(s.maxNy, s.currentNy), 1, true)
   end
@@ -124,10 +158,11 @@ local function addMenuForGroup(group)
     currentNy = nil,
     manualOverride = nil,
 
-    impactCollecting = false,
-    impactT0 = nil,
-    impactWindowMaxNy = nil,
-    lastImpactTime = nil,
+    history = {},
+    lastTouchTime = nil,
+    postCollectUntil = nil,
+    touchTime = nil,
+    touchPlaceName = nil,
   }
 
   local groupInfo = { groupId = groupId, groupName = group:getName() }
@@ -158,6 +193,7 @@ local function addMenuForGroup(group)
 end
 
 local function pollPlayerGroups()
+  unitNameToGroupId = {} -- перестраиваем каждый раз (дёшево)
   for _, coalitionId in ipairs({ coalition.side.RED, coalition.side.BLUE }) do
     local players = coalition.getPlayers(coalitionId)
     if players then
@@ -167,6 +203,9 @@ local function pollPlayerGroups()
           local group = unit:getGroup()
           if group and group:isExist() then
             addMenuForGroup(group)
+            local gid = group:getID()
+            local uname = unit:getName()
+            if uname then unitNameToGroupId[uname] = gid end
           end
         end
       end
@@ -174,41 +213,8 @@ local function pollPlayerGroups()
   end
 end
 
-local function applyAutoStartStopByAGL(_t)
-  if not AUTO_START_ENABLED then return end
-  for groupId, s in pairs(stateByGroup) do
-    if not s.manualOverride then
-      local unit = getUnitFromGroup(s.groupName)
-      if unit and unit:isExist() then
-        local agl = getAGL(unit)
-        if type(agl) == "number" then
-          if agl < AUTO_AGL_THRESHOLD_M then
-            if not s.measuring then startMeasuringForGroup(groupId, s) end
-          else
-            if s.measuring then stopMeasuringForGroup(groupId, s) end
-          end
-        end
-      end
-    end
-  end
-end
-
-local function beginImpactCollection(s, t, Ny)
-  s.impactCollecting = true
-  s.impactT0 = t
-  s.impactWindowMaxNy = Ny
-end
-
-local function finalizeImpactCollection(s)
-  if s.impactWindowMaxNy and s.impactWindowMaxNy > s.maxNy then
-    s.maxNy = s.impactWindowMaxNy
-  end
-  s.impactCollecting = false
-  s.impactT0 = nil
-  s.impactWindowMaxNy = nil
-end
-
-local function updateNyImpactAndMessage(t)
+-- Обновление Ny (continuous), ведение истории, и финализация touchdown-окна после POST_TOUCH_SEC
+local function updateNyHistoryAndMessage(t)
   for groupId, s in pairs(stateByGroup) do
     if s.measuring then
       local unit = getUnitFromGroup(s.groupName)
@@ -223,37 +229,20 @@ local function updateNyImpactAndMessage(t)
           end
           s.currentNy = Ny
 
-          -- Impact trigger logic
           if Ny and type(Ny) == "number" then
-            local cooldownOk = true
-            if s.lastImpactTime and (t - s.lastImpactTime) < IMPACT_COOLDOWN_SEC then
-              cooldownOk = false
-            end
-
-            local vyOk = (velCopy.y <= IMPACT_VY_MAX)
-
-            local aglOk = true
-            local agl = getAGL(unit)
-            if type(agl) == "number" then
-              aglOk = (agl <= IMPACT_AGL_MAX_M)
-            end
-
-            if (not s.impactCollecting) and cooldownOk and vyOk and aglOk and (Ny >= IMPACT_NY_THRESHOLD) then
-              s.lastImpactTime = t
-              beginImpactCollection(s, t, Ny)
-            end
+            addHistoryPoint(s, t, Ny)
+            trimHistory(s, t)
           end
 
-          -- If collecting, update window max and finalize when time elapsed
-          if s.impactCollecting then
-            if Ny and type(Ny) == "number" then
-              if (not s.impactWindowMaxNy) or Ny > s.impactWindowMaxNy then
-                s.impactWindowMaxNy = Ny
-              end
+          -- Если после runway_touch мы собирали POST окно — проверим, не пора ли финализировать
+          if s.postCollectUntil and t >= s.postCollectUntil and s.touchTime then
+            local windowMax = maxNyInWindow(s, s.touchTime - PRE_TOUCH_SEC, s.touchTime + POST_TOUCH_SEC)
+            if windowMax and windowMax > s.maxNy then
+              s.maxNy = windowMax
             end
-            if s.impactT0 and (t - s.impactT0) >= IMPACT_WINDOW_SEC then
-              finalizeImpactCollection(s)
-            end
+            s.postCollectUntil = nil
+            s.touchTime = nil
+            s.touchPlaceName = nil
           end
 
           s.prevVel = velCopy
@@ -268,6 +257,56 @@ local function updateNyImpactAndMessage(t)
   end
 end
 
+-- Обработчик событий DCS
+local okLandingEventHandler = {}
+
+function okLandingEventHandler:onEvent(event)
+  if not event or not event.id then return end
+
+  if event.id ~= S_EVENT_RUNWAY_TOUCH then return end
+  if not event.initiator or not event.initiator.getName then return end
+
+  local uname
+  local okName, resName = pcall(function() return event.initiator:getName() end)
+  if okName then uname = resName end
+  if not uname then return end
+
+  local groupId = unitNameToGroupId[uname]
+  if not groupId then
+    -- На всякий случай попробуем найти по группе инициатора
+    local okG, grp = pcall(function() return event.initiator:getGroup() end)
+    if okG and grp and grp.getID then
+      local okId, gid = pcall(function() return grp:getID() end)
+      if okId then groupId = gid end
+    end
+  end
+  if not groupId then return end
+
+  local s = stateByGroup[groupId]
+  if not s or not s.measuring then return end
+
+  local t = event.time or timer.getTime()
+
+  -- cooldown
+  if s.lastTouchTime and (t - s.lastTouchTime) < TOUCH_COOLDOWN_SEC then
+    return
+  end
+  s.lastTouchTime = t
+
+  -- Ставим "в ожидание" POST окна: maxNy обновим когда окно закончится
+  s.touchTime = t
+  s.postCollectUntil = t + POST_TOUCH_SEC
+
+  -- place (опционально, на будущее)
+  if event.place and event.place.getName then
+    local okP, pname = pcall(function() return event.place:getName() end)
+    if okP then s.touchPlaceName = pname end
+  end
+end
+
+world.addEventHandler(okLandingEventHandler)
+
+-- Планировщик
 local function scheduler(_args, t)
   if t >= nextPollTime then
     pollPlayerGroups()
@@ -275,16 +314,10 @@ local function scheduler(_args, t)
   end
 
   if t >= nextUpdateTime then
-    local ok1, err1 = pcall(applyAutoStartStopByAGL, t)
-    if not ok1 and err1 then
-      env.info("[ok-landing] applyAutoStartStopByAGL error: " .. tostring(err1))
-    end
-
-    local ok2, err2 = pcall(updateNyImpactAndMessage, t)
+    local ok2, err2 = pcall(updateNyHistoryAndMessage, t)
     if not ok2 and err2 then
-      env.info("[ok-landing] updateNyImpactAndMessage error: " .. tostring(err2))
+      env.info("[ok-landing] updateNyHistoryAndMessage error: " .. tostring(err2))
     end
-
     nextUpdateTime = t + UPDATE_INTERVAL
   end
 
