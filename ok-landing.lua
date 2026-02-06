@@ -1,4 +1,4 @@
---[[ ok-landing.lua v2.1
+--[[ ok-landing.lua v2.2
   Утилита измерения максимальной перегрузки при посадке в DCS.
   Вызов: DO SCRIPT FILE в миссии.
   Радио-меню F10 → Other: «Старт измерения», «Сброс измерения», «Стоп измерения».
@@ -119,13 +119,46 @@ end
 
 -- Ny по оси Y в связанной (бортовой) СК: a_world = dv/dt, a_body_y = dot(a_world, bodyY), Ny = 1 + a_body_y/g
 -- getPosition() возвращает pos.y = Vec3 (единичный вектор «вверх» самолёта в мировой СК)
+local DEBUG_LOG_PATH = "/Users/ivanv/cursor-workspace/.cursor/debug.log"
+local function debugLog(location, message, data, hypothesisId)
+  -- #region agent log
+  local ok, err = pcall(function()
+    local f = io.open(DEBUG_LOG_PATH, "a")
+    if f then
+      local function esc(s) return '"' .. tostring(s):gsub('\\', '\\\\'):gsub('"', '\\"') .. '"' end
+      local function num(v) return (type(v) == "number" and v ~= v) and "null" or tostring(v) end
+      local parts = {}
+      if data then
+        for k, v in pairs(data) do
+          if type(v) == "number" then parts[#parts+1] = esc(k) .. ":" .. num(v)
+          else parts[#parts+1] = esc(k) .. ":" .. esc(tostring(v)) end
+        end
+      end
+      local line = string.format('{"sessionId":"debug-session","runId":"run1","hypothesisId":%s,"location":%s,"message":%s,"timestamp":%d,"data":{%s}}\n',
+        esc(hypothesisId or ""), esc(location), esc(message), os.time() * 1000, table.concat(parts, ","))
+      f:write(line)
+      f:close()
+    end
+  end)
+  if not ok and err then env.info("[ok-landing] debugLog: " .. tostring(err)) end
+  -- #endregion
+end
 local function computeNyBodyY(velNow, velPrev, dt, bodyY)
   if not velNow or not velPrev or dt <= 0 or not bodyY then return nil end
   local ax = (velNow.x - velPrev.x) / dt
   local ay = (velNow.y - velPrev.y) / dt
   local az = (velNow.z - velPrev.z) / dt
   local aBodyY = ax * bodyY.x + ay * bodyY.y + az * bodyY.z
-  return 1 + aBodyY / G
+  local NyCurrent = 1 + aBodyY / G
+  -- #region agent log
+  local NyAlt = (bodyY and bodyY.y) and (bodyY.y + aBodyY / G) or nil
+  debugLog("computeNyBodyY", "Ny computed", {
+    bodyY_y = bodyY.y, bodyY_x = bodyY.x, bodyY_z = bodyY.z,
+    aBodyY = aBodyY, dt = dt, Ny = NyCurrent, Ny_alt_bodyY_y = NyAlt,
+    ax = ax, ay = ay, az = az
+  }, "A")
+  -- #endregion
+  return NyCurrent
 end
 
 local function updateNyAndMessage(t)
