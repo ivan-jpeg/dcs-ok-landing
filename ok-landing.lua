@@ -119,12 +119,25 @@ end
 
 -- Ny по оси Y в связанной (бортовой) СК: a_world = dv/dt, a_body_y = dot(a_world, bodyY), Ny = 1 + a_body_y/g
 -- getPosition() возвращает pos. = Vec3 (единичный вектор «вверх» самолёта в мировой СК)
--- Лог отладки: на Windows — c:/GitHub/dcs-ok-landing/debug.log (папка должна существовать)
+-- Лог отладки: на Windows — c:/GitHub/dcs-ok-landing/debug.log (папка создаётся скриптом при первой записи)
 local DEBUG_LOG_PATH = "c:/GitHub/dcs-ok-landing/debug.log"
+local DEBUG_LOG_DIR_CREATED = false
+local function ensureLogDir()
+  if DEBUG_LOG_DIR_CREATED then return end
+  local dir = DEBUG_LOG_PATH:match("^(.+)[/\\][^/\\]+$")
+  if dir and #dir > 0 then
+    local ok = os.execute('mkdir "' .. dir:gsub("/", "\\") .. '" 2>nul')
+    DEBUG_LOG_DIR_CREATED = true
+  end
+end
 local function debugLog(location, message, data, hypothesisId)
   -- #region agent log
   local ok, err = pcall(function()
-    local f = io.open(DEBUG_LOG_PATH, "a")
+    ensureLogDir()
+    local f, openErr = io.open(DEBUG_LOG_PATH, "a")
+    if not f and openErr then
+      env.info("[ok-landing] debugLog: не удалось открыть файл — " .. tostring(openErr))
+    end
     if f then
       local function esc(s) return '"' .. tostring(s):gsub('\\', '\\\\'):gsub('"', '\\"') .. '"' end
       local function num(v) return (type(v) == "number" and v ~= v) and "null" or tostring(v) end
