@@ -1,4 +1,4 @@
---[[ ok-landing.lua v2.0
+--[[ ok-landing.lua v2.1
   Утилита измерения максимальной перегрузки при посадке в DCS.
   Вызов: DO SCRIPT FILE в миссии.
   Радио-меню F10 → Other: «Старт измерения», «Сброс измерения», «Стоп измерения».
@@ -136,16 +136,8 @@ local function updateNyAndMessage(t)
     else
       local agl = getAGL(unit)
       if agl and type(agl) == "number" then
-        -- #region agent log
-        if s.measuring then
-          debugLog({ msg = "update measuring tick", hypothesisId = "A", data = { groupId = groupId, agl = agl, lastAGL = s.lastAGL, willAutoStop = (agl > AGL_THRESHOLD) } })
-        end
-        -- #endregion
         -- Автоостановка только при переходе снизу вверх через 100 м (не при ручном старте выше 100 м)
         if s.measuring and (s.lastAGL ~= nil and s.lastAGL <= AGL_THRESHOLD) and agl > AGL_THRESHOLD then
-          -- #region agent log
-          debugLog({ msg = "fullReset auto-stop", hypothesisId = "A", data = { groupId = groupId, agl = agl, runId = "post-fix" } })
-          -- #endregion
           fullReset(s)
           trigger.action.outTextForGroup(groupId, "", 0.1, true)
         end
