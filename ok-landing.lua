@@ -10,6 +10,29 @@ local AGL_THRESHOLD = 100
 local POLL_INTERVAL = 2.0
 local UPDATE_INTERVAL = 0.1
 
+-- #region agent log
+local DEBUG_LOG_PATH = "/Users/ivanv/cursor-workspace/.cursor/debug.log"
+local function debugLog(data)
+  local ok, err = pcall(function()
+    local line = "{\"timestamp\":" .. tostring(os and os.time and os.time() or 0) .. "000"
+      .. ",\"location\":\"ok-landing.lua\""
+      .. ",\"message\":\"" .. (data.msg or "") .. "\""
+      .. ",\"sessionId\":\"debug-session\""
+      .. ",\"hypothesisId\":\"" .. (data.hypothesisId or "") .. "\""
+    if data.data then
+      for k, v in pairs(data.data) do
+        local vstr = type(v) == "number" and tostring(v) or (type(v) == "boolean" and tostring(v) or "\"" .. tostring(v):gsub("\"", "\\\"") .. "\"")
+        line = line .. ",\"" .. k .. "\":" .. vstr
+      end
+    end
+    line = line .. "}"
+    local f = io.open(DEBUG_LOG_PATH, "a")
+    if f then f:write(line .. "\n"); f:close() end
+  end)
+  if not ok and env and env.info then env.info("[ok-landing debug] " .. tostring(err)) end
+end
+-- #endregion
+
 -- Состояние по группе: currentNy, maxNy, measuring, showMessage, prevVel, prevTime, lastAGL
 local stateByGroup = {}
 local menuAddedForGroups = {}
@@ -62,8 +85,16 @@ local function addMenuForGroup(group)
   local groupInfo = { groupId = groupId, groupName = group:getName() }
 
   local function onStart(_groupInfo)
+    -- #region agent log
+    debugLog({ msg = "onStart menu", hypothesisId = "B", data = { groupId = _groupInfo.groupId } })
+    -- #endregion
     local s = stateByGroup[_groupInfo.groupId]
-    if not s then return end
+    if not s then
+      -- #region agent log
+      debugLog({ msg = "onStart s nil", hypothesisId = "H4", data = { groupId = _groupInfo.groupId } })
+      -- #endregion
+      return
+    end
     s.measuring = true
     s.showMessage = true
     trigger.action.outTextForGroup(_groupInfo.groupId, formatMessage(s.currentNy, s.maxNy), 1, true)
@@ -136,8 +167,16 @@ local function updateNyAndMessage(t)
     else
       local agl = getAGL(unit)
       if agl and type(agl) == "number" then
+        -- #region agent log
+        if s.measuring then
+          debugLog({ msg = "update measuring tick", hypothesisId = "A", data = { groupId = groupId, agl = agl, lastAGL = s.lastAGL, willAutoStop = (agl > AGL_THRESHOLD) } })
+        end
+        -- #endregion
         -- Автоостановка: набор высоты выше 100 м AGL
         if s.measuring and agl > AGL_THRESHOLD then
+          -- #region agent log
+          debugLog({ msg = "fullReset auto-stop", hypothesisId = "A", data = { groupId = groupId, agl = agl } })
+          -- #endregion
           fullReset(s)
           trigger.action.outTextForGroup(groupId, "", 0.1, true)
         end
