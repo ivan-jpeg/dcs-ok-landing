@@ -1,4 +1,4 @@
---[[ ok-landing.lua v2.2
+--[[ ok-landing.lua v2.3
   Утилита измерения максимальной перегрузки при посадке в DCS.
   Вызов: DO SCRIPT FILE в миссии.
   Радио-меню F10 → Other: «Старт измерения», «Сброс измерения», «Стоп измерения».
@@ -118,8 +118,9 @@ local function getUnitFromGroup(groupName)
 end
 
 -- Ny по оси Y в связанной (бортовой) СК: a_world = dv/dt, a_body_y = dot(a_world, bodyY), Ny = 1 + a_body_y/g
--- getPosition() возвращает pos.y = Vec3 (единичный вектор «вверх» самолёта в мировой СК)
-local DEBUG_LOG_PATH = "C:\GitHub\dcs-ok-landing/debug.log"
+-- getPosition() возвращает pos. = Vec3 (единичный вектор «вверх» самолёта в мировой СК)
+-- Лог отладки: на Windows — c:/GitHub/dcs-ok-landing/debug.log (папка должна существовать)
+local DEBUG_LOG_PATH = "c:/GitHub/dcs-ok-landing/debug1.log"
 local function debugLog(location, message, data, hypothesisId)
   -- #region agent log
   local ok, err = pcall(function()
