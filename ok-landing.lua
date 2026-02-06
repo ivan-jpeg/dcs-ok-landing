@@ -120,7 +120,7 @@ end
 -- Ny по оси Y в связанной (бортовой) СК: a_world = dv/dt, a_body_y = dot(a_world, bodyY), Ny = 1 + a_body_y/g
 -- getPosition() возвращает pos. = Vec3 (единичный вектор «вверх» самолёта в мировой СК)
 -- Лог отладки: на Windows — c:/GitHub/dcs-ok-landing/debug.log (папка должна существовать)
-local DEBUG_LOG_PATH = "c:/GitHub/dcs-ok-landing/debug1.log"
+local DEBUG_LOG_PATH = "c:/GitHub/dcs-ok-landing/debug.log"
 local function debugLog(location, message, data, hypothesisId)
   -- #region agent log
   local ok, err = pcall(function()
