@@ -1,4 +1,4 @@
---[[ ok-landing.lua v2.3
+--[[ ok-landing.lua v2.4
   Утилита измерения максимальной перегрузки при посадке в DCS.
   Вызов: DO SCRIPT FILE в миссии.
   Радио-меню F10 → Other: «Старт измерения», «Сброс измерения», «Стоп измерения».
@@ -118,43 +118,22 @@ local function getUnitFromGroup(groupName)
 end
 
 -- Ny по оси Y в связанной (бортовой) СК: a_world = dv/dt, a_body_y = dot(a_world, bodyY), Ny = 1 + a_body_y/g
--- getPosition() возвращает pos. = Vec3 (единичный вектор «вверх» самолёта в мировой СК)
--- Лог отладки: на Windows — c:/GitHub/dcs-ok-landing/debug.log (папка создаётся скриптом при первой записи)
-local DEBUG_LOG_PATH = "c:/GitHub/dcs-ok-landing/debug.log"
-local DEBUG_LOG_DIR_CREATED = false
-local function ensureLogDir()
-  if DEBUG_LOG_DIR_CREATED then return end
-  local dir = DEBUG_LOG_PATH:match("^(.+)[/\\][^/\\]+$")
-  if dir and #dir > 0 then
-    local ok = os.execute('mkdir "' .. dir:gsub("/", "\\") .. '" 2>nul')
-    DEBUG_LOG_DIR_CREATED = true
-  end
-end
+-- getPosition() возвращает pos.y = Vec3 (единичный вектор «вверх» самолёта в мировой СК)
+-- В Mission Scripting DCS библиотека io недоступна — пишем отладку в dcs.log через env.info()
 local function debugLog(location, message, data, hypothesisId)
   -- #region agent log
-  local ok, err = pcall(function()
-    ensureLogDir()
-    local f, openErr = io.open(DEBUG_LOG_PATH, "a")
-    if not f and openErr then
-      env.info("[ok-landing] debugLog: не удалось открыть файл — " .. tostring(openErr))
+  local function esc(s) return '"' .. tostring(s):gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', ' ') .. '"' end
+  local function num(v) return (type(v) == "number" and v ~= v) and "null" or tostring(v) end
+  local parts = {}
+  if data then
+    for k, v in pairs(data) do
+      if type(v) == "number" then parts[#parts + 1] = esc(k) .. ":" .. num(v)
+      else parts[#parts + 1] = esc(k) .. ":" .. esc(tostring(v)) end
     end
-    if f then
-      local function esc(s) return '"' .. tostring(s):gsub('\\', '\\\\'):gsub('"', '\\"') .. '"' end
-      local function num(v) return (type(v) == "number" and v ~= v) and "null" or tostring(v) end
-      local parts = {}
-      if data then
-        for k, v in pairs(data) do
-          if type(v) == "number" then parts[#parts+1] = esc(k) .. ":" .. num(v)
-          else parts[#parts+1] = esc(k) .. ":" .. esc(tostring(v)) end
-        end
-      end
-      local line = string.format('{"sessionId":"debug-session","runId":"run1","hypothesisId":%s,"location":%s,"message":%s,"timestamp":%d,"data":{%s}}\n',
-        esc(hypothesisId or ""), esc(location), esc(message), os.time() * 1000, table.concat(parts, ","))
-      f:write(line)
-      f:close()
-    end
-  end)
-  if not ok and err then env.info("[ok-landing] debugLog: " .. tostring(err)) end
+  end
+  local line = string.format('{"sessionId":"debug-session","runId":"run1","hypothesisId":%s,"location":%s,"message":%s,"timestamp":%d,"data":{%s}}',
+    esc(hypothesisId or ""), esc(location), esc(message), os.time() * 1000, table.concat(parts, ","))
+  env.info("[ok-landing] DEBUG " .. line)
   -- #endregion
 end
 local function computeNyBodyY(velNow, velPrev, dt, bodyY)
