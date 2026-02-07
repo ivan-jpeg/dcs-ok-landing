@@ -76,6 +76,9 @@ local function addMenuForGroup(group)
     lastAGL = nil,
     groupName = group:getName()
   }
+  -- #region agent log
+  env.info("[ok-landing-debug] addMenuForGroup groupId=" .. tostring(groupId) .. " groupName=" .. tostring(group:getName()))
+  -- #endregion
 
   local groupInfo = { groupId = groupId, groupName = group:getName() }
 
@@ -147,19 +150,46 @@ end
 --- При касании полосы (S_EVENT_RUNWAY_TOUCH): если замер перегрузки включён,
 --- выводит отдельное сообщение «Посадка» на 10 секунд для группы игрока.
 local function setupRunwayTouchHandler()
+  -- #region agent log
+  env.info("[ok-landing-debug] setupRunwayTouchHandler called S_EVENT_RUNWAY_TOUCH=" .. tostring(S_EVENT_RUNWAY_TOUCH))
+  -- #endregion
   local handler = {}
   function handler:onEvent(event)
+    -- #region agent log
+    if event.id == S_EVENT_RUNWAY_TOUCH or event.id == 4 then
+      env.info("[ok-landing-debug] onEvent id=" .. tostring(event.id) .. " time=" .. tostring(event.time))
+    end
+    -- #endregion
     if event.id ~= S_EVENT_RUNWAY_TOUCH then return end
     local initiator = event.initiator
-    if not initiator or not initiator:isExist() then return end
+    if not initiator or not initiator:isExist() then
+      -- #region agent log
+      env.info("[ok-landing-debug] runway_touch: no initiator or not exist")
+      -- #endregion
+      return
+    end
     local group = initiator:getGroup()
-    if not group or not group:isExist() then return end
+    if not group or not group:isExist() then
+      -- #region agent log
+      env.info("[ok-landing-debug] runway_touch: no group or not exist")
+      -- #endregion
+      return
+    end
     local groupId = group:getID()
     local s = stateByGroup[groupId]
+    -- #region agent log
+    env.info("[ok-landing-debug] runway_touch groupId=" .. tostring(groupId) .. " hasState=" .. tostring(s ~= nil) .. " measuring=" .. tostring(s and s.measuring or false))
+    -- #endregion
     if not s or not s.measuring then return end
+    -- #region agent log
+    env.info("[ok-landing-debug] outTextForGroup Посадка groupId=" .. tostring(groupId))
+    -- #endregion
     trigger.action.outTextForGroup(groupId, "\n\nПосадка\n\n", LANDING_MESSAGE_DURATION, true)
   end
   world.addEventHandler(handler)
+  -- #region agent log
+  env.info("[ok-landing-debug] world.addEventHandler(handler) done")
+  -- #endregion
 end
 
 -- =============================================================================
