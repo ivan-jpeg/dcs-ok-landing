@@ -131,8 +131,9 @@ local function debugLog(location, message, data, hypothesisId)
       else parts[#parts + 1] = esc(k) .. ":" .. esc(tostring(v)) end
     end
   end
-  local line = string.format('{"sessionId":"debug-session","runId":"run1","hypothesisId":%s,"location":%s,"message":%s,"timestamp":%d,"data":{%s}}',
-    esc(hypothesisId or ""), esc(location), esc(message), os.time() * 1000, table.concat(parts, ","))
+  local ts = (timer and timer.getTime and timer.getTime()) and (timer.getTime() * 1000) or 0
+  local line = string.format('{"sessionId":"debug-session","runId":"run1","hypothesisId":%s,"location":%s,"message":%s,"timestamp":%s,"data":{%s}}',
+    esc(hypothesisId or ""), esc(location), esc(message), ts, table.concat(parts, ","))
   env.info("[ok-landing] DEBUG " .. line)
   -- #endregion
 end
