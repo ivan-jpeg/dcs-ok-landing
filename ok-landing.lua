@@ -1,4 +1,4 @@
---[[ ok-landing.lua v3.1
+--[[ ok-landing.lua v3.11
   Утилита измерения максимальной перегрузки при посадке в DCS.
   Вызов: DO SCRIPT FILE в миссии.
   Радио-меню F10 → Other: «Старт измерения», «Сброс измерения», «Стоп измерения».
@@ -56,6 +56,7 @@ local function fullReset(s)
   s.showMessage = false
   s.prevVel = nil
   s.prevTime = nil
+  s.landingMessageUntilTime = nil
 end
 
 --- Добавляет для группы пункты радио-меню и инициализирует состояние.
@@ -74,7 +75,8 @@ local function addMenuForGroup(group)
     prevVel = nil,
     prevTime = nil,
     lastAGL = nil,
-    groupName = group:getName()
+    groupName = group:getName(),
+    landingMessageUntilTime = nil
   }
   -- #region agent log
   env.info("[ok-landing-debug] addMenuForGroup groupId=" .. tostring(groupId) .. " groupName=" .. tostring(group:getName()))
@@ -181,6 +183,7 @@ local function setupRunwayTouchHandler()
     env.info("[ok-landing-debug] runway_touch groupId=" .. tostring(groupId) .. " hasState=" .. tostring(s ~= nil) .. " measuring=" .. tostring(s and s.measuring or false))
     -- #endregion
     if not s or not s.measuring then return end
+    s.landingMessageUntilTime = event.time + LANDING_MESSAGE_DURATION
     -- #region agent log
     env.info("[ok-landing-debug] outTextForGroup Посадка groupId=" .. tostring(groupId))
     -- #endregion
@@ -267,7 +270,9 @@ local function updateNyAndMessage(t)
             s.prevTime = t
 
             if s.showMessage then
-              trigger.action.outTextForGroup(groupId, formatMessage(s.currentNy, s.maxNy), 1, true)
+              if not (s.landingMessageUntilTime and t < s.landingMessageUntilTime) then
+                trigger.action.outTextForGroup(groupId, formatMessage(s.currentNy, s.maxNy), 1, true)
+              end
             end
           end
         end
