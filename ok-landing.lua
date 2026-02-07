@@ -1,27 +1,36 @@
---[[ ok-landing.lua v2.5
+--[[ ok-landing.lua v3.0 (stable)
   Утилита измерения максимальной перегрузки при посадке в DCS.
   Вызов: DO SCRIPT FILE в миссии.
   Радио-меню F10 → Other: «Старт измерения», «Сброс измерения», «Стоп измерения».
   Автозапуск при снижении ниже 100 м AGL, автоостановка при наборе выше 100 м AGL.
 ]]
 
+-- =============================================================================
+-- Константы и глобальное состояние
+-- =============================================================================
+
 local G = 9.81
 local AGL_THRESHOLD = 100
 local POLL_INTERVAL = 2.0
 local UPDATE_INTERVAL = 0.1
 
--- Состояние по группе: currentNy, maxNy, measuring, showMessage, prevVel, prevTime, lastAGL
 local stateByGroup = {}
 local menuAddedForGroups = {}
 local nextPollTime = 0
 local nextUpdateTime = 0
 
+-- =============================================================================
+-- Форматирование сообщения и расчёт высоты над землёй
+-- =============================================================================
+
 local function formatMessage(currentNy, maxNy)
   local nyStr = string.format("%.2f", currentNy or 0)
   local maxStr = string.format("%.2f", maxNy or 0)
-  return "Ny = " .. nyStr .. "\nNy(max) = " .. maxStr
+  return "\n\n______________\n\nNy = " .. nyStr .. "\nNy(max) = " .. maxStr .. "\n\n______________\n\n"
 end
 
+--- Высота над землёй (AGL): разница между высотой единицы и высотой рельефа.
+--- getPosition().p.y — высота над уровнем моря; land.getHeight — рельеф в точке (x, z).
 local function getAGL(unit)
   if not unit or not unit:isExist() then return nil end
   local pos = unit:getPosition()
@@ -31,7 +40,11 @@ local function getAGL(unit)
   return pos.p.y - landH
 end
 
--- Полный сброс (при автоостановке по высоте)
+-- =============================================================================
+-- Сброс состояния и радио-меню
+-- =============================================================================
+
+--- Полный сброс состояния группы (при автоостановке по набору высоты > 100 м AGL).
 local function fullReset(s)
   if not s then return end
   s.currentNy = 1
@@ -42,6 +55,8 @@ local function fullReset(s)
   s.prevTime = nil
 end
 
+--- Добавляет для группы пункты радио-меню и инициализирует состояние.
+--- Состояние хранится в stateByGroup[groupId]; каждый игрок (группа) имеет свой счётчик.
 local function addMenuForGroup(group)
   if not group or not group:isExist() then return end
   local groupId = group:getID()
@@ -72,7 +87,6 @@ local function addMenuForGroup(group)
   local function onReset(_groupInfo)
     local s = stateByGroup[_groupInfo.groupId]
     if not s then return end
-    -- Сброс только Ny(max); текущее Ny продолжает считаться
     s.maxNy = (s.currentNy and s.currentNy > 1) and s.currentNy or 1
     if s.showMessage then
       trigger.action.outTextForGroup(_groupInfo.groupId, formatMessage(s.currentNy, s.maxNy), 1, true)
@@ -92,6 +106,11 @@ local function addMenuForGroup(group)
   missionCommands.addCommandForGroup(groupId, "Стоп измерения", nil, onStop, groupInfo)
 end
 
+-- =============================================================================
+-- Опрос игроков и получение юнита по имени группы
+-- =============================================================================
+
+--- Проходит по коалициям RED и BLUE, находит игроков и добавляет меню для их групп.
 local function pollPlayerGroups()
   for _, coalitionId in ipairs({ coalition.side.RED, coalition.side.BLUE }) do
     local players = coalition.getPlayers(coalitionId)
@@ -109,6 +128,7 @@ local function pollPlayerGroups()
   end
 end
 
+--- Возвращает первый юнит группы по имени группы (Group.getByName + getUnit(1)).
 local function getUnitFromGroup(groupName)
   local group = Group.getByName(groupName)
   if not group or not group:isExist() then return nil end
@@ -117,56 +137,42 @@ local function getUnitFromGroup(groupName)
   return unit
 end
 
--- Ny по оси Y в связанной (бортовой) СК: a_world = dv/dt, a_body_y = dot(a_world, bodyY), Ny = 1 + a_body_y/g
--- getPosition() возвращает pos.y = Vec3 (единичный вектор «вверх» самолёта в мировой СК)
--- В Mission Scripting DCS библиотека io недоступна — пишем отладку в dcs.log через env.info()
-local function debugLog(location, message, data, hypothesisId)
-  -- #region agent log
-  local function esc(s) return '"' .. tostring(s):gsub('\\', '\\\\'):gsub('"', '\\"'):gsub('\n', ' ') .. '"' end
-  local function num(v) return (type(v) == "number" and v ~= v) and "null" or tostring(v) end
-  local parts = {}
-  if data then
-    for k, v in pairs(data) do
-      if type(v) == "number" then parts[#parts + 1] = esc(k) .. ":" .. num(v)
-      else parts[#parts + 1] = esc(k) .. ":" .. esc(tostring(v)) end
-    end
-  end
-  local ts = (timer and timer.getTime and timer.getTime()) and (timer.getTime() * 1000) or 0
-  local line = string.format('{"sessionId":"debug-session","runId":"run1","hypothesisId":%s,"location":%s,"message":%s,"timestamp":%s,"data":{%s}}',
-    esc(hypothesisId or ""), esc(location), esc(message), ts, table.concat(parts, ","))
-  env.info("[ok-landing] DEBUG " .. line)
-  -- #endregion
-end
+-- =============================================================================
+-- Расчёт перегрузки Ny по оси Y в связанной (бортовой) СК
+-- =============================================================================
+
+--- Вычисляет вертикальную перегрузку Ny по оси Y самолёта в связанной СК.
+--- Используется: ускорение в мировой СК a = dv/dt, проекция на ось Y самолёта (pos.y),
+--- формула Ny = bodyY.y + aBodyY/G (проекция гравитации + избыточное ускорение в g).
+--- getPosition().y — единичный вектор «вверх» самолёта в мировой СК (DCS API).
 local function computeNyBodyY(velNow, velPrev, dt, bodyY)
   if not velNow or not velPrev or dt <= 0 or not bodyY then return nil end
   local ax = (velNow.x - velPrev.x) / dt
   local ay = (velNow.y - velPrev.y) / dt
   local az = (velNow.z - velPrev.z) / dt
   local aBodyY = ax * bodyY.x + ay * bodyY.y + az * bodyY.z
-  -- Перегрузка по оси Y самолёта: проекция гравитации bodyY.y + избыточное ускорение aBodyY/G
   local NyCurrent = bodyY.y + aBodyY / G
-  -- #region agent log
-  debugLog("computeNyBodyY", "Ny computed post-fix", {
-    bodyY_y = bodyY.y, aBodyY = aBodyY, dt = dt, Ny = NyCurrent
-  }, "A")
-  -- #endregion
   return NyCurrent
 end
 
+-- =============================================================================
+-- Обновление Ny по всем группам, автостарт/автостоп по AGL
+-- =============================================================================
+
+--- Для каждой группы с измерением: обновляет AGL, выполняет автостарт/автостоп по 100 м,
+--- считает Ny по предыдущей и текущей скорости, обновляет currentNy/maxNy и сообщение.
 local function updateNyAndMessage(t)
   for groupId, s in pairs(stateByGroup) do
     local unit = getUnitFromGroup(s.groupName)
     if not unit or not unit:isExist() then
-      -- skip
+      -- группа без юнита — пропуск
     else
       local agl = getAGL(unit)
       if agl and type(agl) == "number" then
-        -- Автоостановка только при переходе снизу вверх через 100 м (не при ручном старте выше 100 м)
         if s.measuring and (s.lastAGL ~= nil and s.lastAGL <= AGL_THRESHOLD) and agl > AGL_THRESHOLD then
           fullReset(s)
           trigger.action.outTextForGroup(groupId, "", 0.1, true)
         end
-        -- Автозапуск: первое снижение ниже 100 м (переход сверху вниз)
         if not s.measuring and (s.lastAGL == nil or s.lastAGL >= AGL_THRESHOLD) and agl < AGL_THRESHOLD then
           s.measuring = true
           s.showMessage = true
@@ -179,17 +185,17 @@ local function updateNyAndMessage(t)
       end
 
       if not s.measuring then
-        -- skip update
+        -- измерение выключено — не обновляем Ny
       else
         local pos = unit:getPosition()
         local vel = unit:getVelocity()
         if not pos or not pos.y or not vel then
-          -- skip
+          -- нет ориентации или скорости — пропуск
         else
           local velCopy = { x = vel.x, y = vel.y, z = vel.z }
           local bodyY = pos.y
           if type(bodyY.x) ~= "number" or type(bodyY.y) ~= "number" or type(bodyY.z) ~= "number" then
-            -- skip
+            -- некорректная ориентация — пропуск
           else
             if s.prevVel and s.prevTime and (t - s.prevTime) > 0.001 then
               local dt = t - s.prevTime
@@ -215,6 +221,12 @@ local function updateNyAndMessage(t)
   end
 end
 
+-- =============================================================================
+-- Планировщик и запуск
+-- =============================================================================
+
+--- Таймер: периодически опрашивает группы игроков и обновляет Ny/сообщения.
+--- Ошибки updateNyAndMessage логируются через env.info, не прерывают работу.
 local function scheduler(_args, t)
   if t >= nextPollTime then
     pollPlayerGroups()
