@@ -1,4 +1,4 @@
---[[ ok-landing.lua v3.11
+--[[ ok-landing.lua v3.12
   Утилита измерения максимальной перегрузки при посадке в DCS.
   Вызов: DO SCRIPT FILE в миссии.
   Радио-меню F10 → Other: «Старт измерения», «Сброс измерения», «Стоп измерения».
@@ -15,7 +15,7 @@ local AGL_THRESHOLD = 100
 local POLL_INTERVAL = 2.0
 local UPDATE_INTERVAL = 0.1
 local S_EVENT_RUNWAY_TOUCH = 55
-local LANDING_MESSAGE_DURATION = 10
+local LANDING_MESSAGE_DURATION = 20
 
 local stateByGroup = {}
 local menuAddedForGroups = {}
@@ -30,6 +30,15 @@ local function formatMessage(currentNy, maxNy)
   local nyStr = string.format("%.2f", currentNy or 0)
   local maxStr = string.format("%.2f", maxNy or 0)
   return "\n\n______________\n\nNy = " .. nyStr .. "\nNy(max) = " .. maxStr .. "\n\n______________\n\n"
+end
+
+--- Сообщение с блоком «Посадка», Ny в момент касания и текущими Ny/Ny(max).
+--- touchdownNy — перегрузка в момент посадки (сохраняется при runway_touch).
+local function formatMessageWithLanding(currentNy, maxNy, touchdownNy)
+  local nyStr = string.format("%.2f", currentNy or 0)
+  local maxStr = string.format("%.2f", maxNy or 0)
+  local tdStr = string.format("%.2f", touchdownNy or 0)
+  return "\n\nПосадка, Ny(пос) = " .. tdStr .. "\n\n______________\n\nNy = " .. nyStr .. "\nNy(max) = " .. maxStr .. "\n\n______________\n\n"
 end
 
 --- Высота над землёй (AGL): разница между высотой единицы и высотой рельефа.
@@ -57,6 +66,7 @@ local function fullReset(s)
   s.prevVel = nil
   s.prevTime = nil
   s.landingMessageUntilTime = nil
+  s.touchdownNy = nil
 end
 
 --- Добавляет для группы пункты радио-меню и инициализирует состояние.
@@ -76,7 +86,8 @@ local function addMenuForGroup(group)
     prevTime = nil,
     lastAGL = nil,
     groupName = group:getName(),
-    landingMessageUntilTime = nil
+    landingMessageUntilTime = nil,
+    touchdownNy = nil
   }
   -- #region agent log
   env.info("[ok-landing-debug] addMenuForGroup groupId=" .. tostring(groupId) .. " groupName=" .. tostring(group:getName()))
@@ -183,11 +194,12 @@ local function setupRunwayTouchHandler()
     env.info("[ok-landing-debug] runway_touch groupId=" .. tostring(groupId) .. " hasState=" .. tostring(s ~= nil) .. " measuring=" .. tostring(s and s.measuring or false))
     -- #endregion
     if not s or not s.measuring then return end
+    s.touchdownNy = s.currentNy
     s.landingMessageUntilTime = event.time + LANDING_MESSAGE_DURATION
     -- #region agent log
     env.info("[ok-landing-debug] outTextForGroup Посадка groupId=" .. tostring(groupId))
     -- #endregion
-    trigger.action.outTextForGroup(groupId, "\n\nПосадка\n\n", LANDING_MESSAGE_DURATION, true)
+    trigger.action.outTextForGroup(groupId, formatMessageWithLanding(s.currentNy, s.maxNy, s.touchdownNy), 1, true)
   end
   world.addEventHandler(handler)
   -- #region agent log
@@ -270,7 +282,9 @@ local function updateNyAndMessage(t)
             s.prevTime = t
 
             if s.showMessage then
-              if not (s.landingMessageUntilTime and t < s.landingMessageUntilTime) then
+              if s.landingMessageUntilTime and t < s.landingMessageUntilTime then
+                trigger.action.outTextForGroup(groupId, formatMessageWithLanding(s.currentNy, s.maxNy, s.touchdownNy), 1, true)
+              else
                 trigger.action.outTextForGroup(groupId, formatMessage(s.currentNy, s.maxNy), 1, true)
               end
             end
