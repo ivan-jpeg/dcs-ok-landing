@@ -1,4 +1,4 @@
---[[ ok-landing.lua v2.4
+--[[ ok-landing.lua v2.5
   Утилита измерения максимальной перегрузки при посадке в DCS.
   Вызов: DO SCRIPT FILE в миссии.
   Радио-меню F10 → Other: «Старт измерения», «Сброс измерения», «Стоп измерения».
@@ -143,13 +143,11 @@ local function computeNyBodyY(velNow, velPrev, dt, bodyY)
   local ay = (velNow.y - velPrev.y) / dt
   local az = (velNow.z - velPrev.z) / dt
   local aBodyY = ax * bodyY.x + ay * bodyY.y + az * bodyY.z
-  local NyCurrent = 1 + aBodyY / G
+  -- Перегрузка по оси Y самолёта: проекция гравитации bodyY.y + избыточное ускорение aBodyY/G
+  local NyCurrent = bodyY.y + aBodyY / G
   -- #region agent log
-  local NyAlt = (bodyY and bodyY.y) and (bodyY.y + aBodyY / G) or nil
-  debugLog("computeNyBodyY", "Ny computed", {
-    bodyY_y = bodyY.y, bodyY_x = bodyY.x, bodyY_z = bodyY.z,
-    aBodyY = aBodyY, dt = dt, Ny = NyCurrent, Ny_alt_bodyY_y = NyAlt,
-    ax = ax, ay = ay, az = az
+  debugLog("computeNyBodyY", "Ny computed post-fix", {
+    bodyY_y = bodyY.y, aBodyY = aBodyY, dt = dt, Ny = NyCurrent
   }, "A")
   -- #endregion
   return NyCurrent
