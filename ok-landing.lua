@@ -1,8 +1,9 @@
---[[ ok-landing.lua v3.0 (stable)
+--[[ ok-landing.lua v3.1
   Утилита измерения максимальной перегрузки при посадке в DCS.
   Вызов: DO SCRIPT FILE в миссии.
   Радио-меню F10 → Other: «Старт измерения», «Сброс измерения», «Стоп измерения».
   Автозапуск при снижении ниже 100 м AGL, автоостановка при наборе выше 100 м AGL.
+  При касании полосы (S_EVENT_RUNWAY_TOUCH) и включённом замере выводится сообщение «Посадка» на 10 с.
 ]]
 
 -- =============================================================================
@@ -13,6 +14,8 @@ local G = 9.81
 local AGL_THRESHOLD = 100
 local POLL_INTERVAL = 2.0
 local UPDATE_INTERVAL = 0.1
+local S_EVENT_RUNWAY_TOUCH = 55
+local LANDING_MESSAGE_DURATION = 10
 
 local stateByGroup = {}
 local menuAddedForGroups = {}
@@ -138,6 +141,28 @@ local function getUnitFromGroup(groupName)
 end
 
 -- =============================================================================
+-- Событие касания полосы (runway touch)
+-- =============================================================================
+
+--- При касании полосы (S_EVENT_RUNWAY_TOUCH): если замер перегрузки включён,
+--- выводит отдельное сообщение «Посадка» на 10 секунд для группы игрока.
+local function setupRunwayTouchHandler()
+  local handler = {}
+  function handler:onEvent(event)
+    if event.id ~= S_EVENT_RUNWAY_TOUCH then return end
+    local initiator = event.initiator
+    if not initiator or not initiator:isExist() then return end
+    local group = initiator:getGroup()
+    if not group or not group:isExist() then return end
+    local groupId = group:getID()
+    local s = stateByGroup[groupId]
+    if not s or not s.measuring then return end
+    trigger.action.outTextForGroup(groupId, "\n\nПосадка\n\n", LANDING_MESSAGE_DURATION, true)
+  end
+  world.addEventHandler(handler)
+end
+
+-- =============================================================================
 -- Расчёт перегрузки Ny по оси Y в связанной (бортовой) СК
 -- =============================================================================
 
@@ -244,4 +269,5 @@ local function scheduler(_args, t)
   return t + 0.1
 end
 
+setupRunwayTouchHandler()
 timer.scheduleFunction(scheduler, {}, timer.getTime() + 1)
