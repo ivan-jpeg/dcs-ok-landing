@@ -4,6 +4,7 @@ Utility for measuring peak **G-load at touchdown** in **DCS World**.
 
 #### [Инструкция на русском](https://github.com/ivan-jpeg/dcs-ok-landing/blob/main/RU-README.md)
 
+![](https://github.com/ivan-jpeg/dcs-ok-landing/blob/main/img/ok-banner.jpg)
 
 ## Assess the quality of your landing
 
