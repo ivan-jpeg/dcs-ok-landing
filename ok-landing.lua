@@ -1,4 +1,4 @@
---[[ ok-landing.lua v3.12
+--[[ ok-landing.lua v3.2
   Утилита измерения максимальной перегрузки при посадке в DCS.
   Вызов: DO SCRIPT FILE в миссии.
   Радио-меню F10 → Other: «Старт измерения», «Сброс измерения», «Стоп измерения».
@@ -26,18 +26,31 @@ local nextUpdateTime = 0
 -- Форматирование сообщения и расчёт высоты над землёй
 -- =============================================================================
 
+--- Оценка мягкости посадки по maxNy: до 1.7 — Отлично, 1.7–2.0 — Хорошо,
+--- 2.0–2.5 — Удовлетворительно, выше 2.5 — Грубая посадка.
+local function getLandingRating(maxNy)
+  local ny = maxNy or 0
+  if ny <= 1.7 then return "Отлично!"
+  elseif ny <= 2.0 then return "Хорошо"
+  elseif ny <= 2.5 then return "Удовлетворительно"
+  else return "Грубая посадка! Требуется осмотр самолёта"
+  end
+end
+
+--- Сообщение только с текущей и максимальной перегрузкой.
 local function formatMessage(currentNy, maxNy)
   local nyStr = string.format("%.2f", currentNy or 0)
   local maxStr = string.format("%.2f", maxNy or 0)
-  return "\n\n______________\n\nNy = " .. nyStr .. "\nNy(max) = " .. maxStr .. "\n\n______________\n\n"
+  return "\n\n   Ny = " .. nyStr .. "\n   Ny(max) = " .. maxStr .. "\n\n"
 end
 
---- Сообщение с блоком «Перегрузка при посадке» (maxNy) и текущими Ny/Ny(max).
+--- Сообщение с текущей, максимальной перегрузкой и блоком «Перегрузка при посадке» с оценкой.
 local function formatMessageWithLanding(currentNy, maxNy)
   local nyStr = string.format("%.2f", currentNy or 0)
   local maxStr = string.format("%.2f", maxNy or 0)
   local landingStr = string.format("%.2f", maxNy or 0)
-  return "\n\nПерегрузка при посадке — " .. landingStr .. "\n\n______________\n\nNy = " .. nyStr .. "\nNy(max) = " .. maxStr .. "\n\n______________\n\n"
+  local rating = getLandingRating(maxNy)
+  return "\n\n   Ny = " .. nyStr .. "\n   Ny(max) = " .. maxStr .. "\n\n   Перегрузка при посадке — " .. landingStr .. ",  «" .. rating .. "»\n\n"
 end
 
 --- Высота над землёй (AGL): разница между высотой единицы и высотой рельефа.
