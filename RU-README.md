@@ -16,7 +16,7 @@
 - < 2,5 — Уовлеторительно
 - \> 2,5 — Грубая посадка
 
-![](https://github.com/ivan-jpeg/dcs-ok-landing/blob/main/img/s3.jpg)
+![](https://github.com/ivan-jpeg/dcs-ok-landing/blob/main/img/s1.jpg)
 
 ---
 
