@@ -1,8 +1,9 @@
 # OK Landing
 
-Stable release (v3.3) — utility for measuring peak **G-load at touchdown** in **DCS World**.
+Utility for measuring peak **G-load at touchdown** in **DCS World**.
 
----
+**[Инструкция на русском](https://github.com/ivan-jpeg/dcs-ok-landing/blob/main/RU-README.md)
+**---
 
 ## Assess the quality of your landing
 
