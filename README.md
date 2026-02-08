@@ -29,6 +29,8 @@ Whether you’re trying to **grease it on** or just get the bird down in one pie
 
 > **Note:** The script runs in the Mission Scripting environment. The file must be available at the path you specify (typically the mission folder or a shared scripts folder).
 
+![](https://github.com/ivan-jpeg/dcs-ok-landing/blob/main/img/editor.jpg)
+
 ---
 
 ## How to use the script in-game
