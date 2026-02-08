@@ -45,6 +45,8 @@ In flight, open the **radio menu** (**F10**), go to **Other**. You’ll see thre
 | **Reset measurement** | Reset only **max** G — Ny(max); current Ny keeps updating. |
 | **Stop measurement** | Turn off measurement and hide the message. |
 
+![](https://github.com/ivan-jpeg/dcs-ok-landing/blob/main/img/menu.jpg)
+
 ### Automatic mode
 
 - **Auto start:** When you descend below **100 m** AGL, measurement starts automatically.
