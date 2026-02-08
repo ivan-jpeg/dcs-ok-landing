@@ -15,6 +15,8 @@ Whether you’re trying to **grease it on** or just get the bird down in one pie
 - **&lt; 2.5** — Satisfactory
 - **&gt; 2.5** — Hard landing (inspect aircraft)
 
+![](https://github.com/ivan-jpeg/dcs-ok-landing/blob/main/img/s5.jpg)
+
 ---
 
 ## How to load the script in the Mission Editor
