@@ -2,7 +2,7 @@
 
 Релизная стабильная версия (v3.3) — утилита измерения максимальной перегрузки при посадке в **DCS World**
 
-![](https://github.com/ivan-jpeg/dcs-ok-landing/blob/main/img/s1.jpg)
+![](https://github.com/ivan-jpeg/dcs-ok-landing/blob/main/img/s2.jpg)
 
 ---
 ## Оцени качество своей посадки
