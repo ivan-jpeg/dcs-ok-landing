@@ -1,3 +1,5 @@
+Инструкция на русском ниже
+
 # OK Landing
 
 Stable release (v3.3) — utility for measuring peak **G-load at touchdown** in **DCS World**.
